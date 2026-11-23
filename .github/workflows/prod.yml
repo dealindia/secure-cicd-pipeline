@@ -1,0 +1,44 @@
+name: Prod Deploy
+
+# Runs when a PR is merged into main. The security scans run again; if they
+# pass, the deploy waits for a reviewer to approve the `production` environment.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+concurrency:
+  group: prod-deploy
+  cancel-in-progress: false
+
+env:
+  DOCKER_CONTEXT: ${{ vars.DOCKER_CONTEXT || '.' }}
+  DOCKERFILE:     ${{ vars.DOCKERFILE || 'Dockerfile' }}
+  IMAGE:          app:${{ github.sha }}
+
+jobs:
+  security:
+    name: Security
+    uses: ./.github/workflows/security-scans.yml
+    secrets:
+      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
+  deploy-prod:
+    name: Deploy to PROD
+    needs: security
+    runs-on: ubuntu-latest
+    environment: production        # pauses here for manual approval
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t "$IMAGE" -f "$DOCKERFILE" "$DOCKER_CONTEXT"
+
+      - name: Deploy to PROD
+        run: |
+          echo "Deploying $IMAGE to PROD"
+          # TODO: replace with your real production deploy.

@@ -1,0 +1,4 @@
+# ZAP baseline rule overrides: <rule id>	<IGNORE|INFO|WARN|FAIL>	<note>
+# Add a line only for a finding you have reviewed and accepted.
+10049	IGNORE	(Non-Storable Content) API sets Cache-Control: no-store on purpose
+90005	IGNORE	(Sec-Fetch-Dest Header Missing) Request header from browsers; not applicable to a JSON API

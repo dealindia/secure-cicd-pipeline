@@ -1,0 +1,263 @@
+name: Security Scans
+
+# SAST (Snyk Code), SCA (Snyk Open Source + Snyk Container) and DAST (OWASP ZAP).
+#
+# Runs on every PR into main (these are the required status checks), can be
+# started by hand, and is reused by prod.yml before every production deploy.
+# Other repositories can call it too:
+#
+#   jobs:
+#     security:
+#       uses: dealindia/secure-cicd-pipeline/.github/workflows/security-scans.yml@v1
+#       secrets:
+#         SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+#
+# Gate: SAST and SCA each fail only when they find MORE THAN
+# `max-high-findings` (default 3) unique high/critical issues.
+#
+# Settings come from workflow_call inputs, then repository variables,
+# then the defaults below.
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      max-high-findings:
+        description: Fail a scan when it finds more than this many high/critical issues
+        type: string
+        required: false
+      app-port:
+        description: Port the container listens on
+        type: string
+        required: false
+      health-path:
+        description: Path that returns 2xx once the app is up
+        type: string
+        required: false
+      dast-path:
+        description: Path ZAP starts scanning from
+        type: string
+        required: false
+      docker-context:
+        description: Docker build context
+        type: string
+        required: false
+      dockerfile:
+        description: Path to the Dockerfile
+        type: string
+        required: false
+      run-dast:
+        description: "'true' or 'false'"
+        type: string
+        required: false
+      snyk-org:
+        description: Snyk organization ID (optional)
+        type: string
+        required: false
+    secrets:
+      SNYK_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+  security-events: write   # upload findings to the Security tab
+
+env:
+  MAX_HIGH_FINDINGS: ${{ inputs.max-high-findings || vars.MAX_HIGH_FINDINGS || '3' }}
+  APP_PORT:          ${{ inputs.app-port || vars.APP_PORT || '8080' }}
+  HEALTH_PATH:       ${{ inputs.health-path || vars.HEALTH_PATH || '/' }}
+  DAST_PATH:         ${{ inputs.dast-path || vars.DAST_PATH || '/' }}
+  DOCKER_CONTEXT:    ${{ inputs.docker-context || vars.DOCKER_CONTEXT || '.' }}
+  DOCKERFILE:        ${{ inputs.dockerfile || vars.DOCKERFILE || 'Dockerfile' }}
+  RUN_DAST:          ${{ inputs.run-dast || vars.RUN_DAST || 'true' }}
+  SNYK_CFG_ORG:      ${{ inputs.snyk-org || vars.SNYK_ORG }}
+  SNYK_TOKEN:        ${{ secrets.SNYK_TOKEN }}
+  IMAGE:             app:scan
+
+jobs:
+  # ---------------- SAST: your own source code ----------------
+  sast:
+    name: SAST (Snyk Code)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: snyk/actions/setup@11b673cfb4b0dc0d860a1323caa199d54950dcce # master 2026-10-07
+
+      - name: Check Snyk token
+        run: |
+          if [ -z "$SNYK_TOKEN" ]; then
+            echo "::error::SNYK_TOKEN secret is not set (Settings > Secrets and variables > Actions)."
+            exit 1
+          fi
+
+      - name: Snyk Code test
+        run: |
+          set +e
+          snyk code test ${SNYK_CFG_ORG:+--org="$SNYK_CFG_ORG"} --sarif-file-output=snyk-code.sarif
+          rc=$?
+          set -e
+          # 0 = no issues, 1 = issues found (the gate decides), anything else = error
+          if [ "$rc" -gt 1 ]; then
+            echo "::error::Snyk Code could not run (exit $rc). Is Snyk Code enabled for your Snyk org, and is SNYK_ORG set?"
+            exit 1
+          fi
+
+      - name: Gate - fail on more than ${{ env.MAX_HIGH_FINDINGS }} high findings
+        env:
+          LABEL: SAST (Snyk Code)
+          FILES: snyk-code.sarif
+        run: &gate |
+          # Count unique HIGH/CRITICAL findings across Snyk result files.
+          #  - SARIF (Snyk Code): results with level "error" are High.
+          #  - JSON (Snyk Open Source / Container): severity high or critical,
+          #    counted once per Snyk issue ID.
+          existing=()
+          for f in $FILES; do [ -s "$f" ] && existing+=("$f"); done
+          count=0
+          if [ ${#existing[@]} -gt 0 ]; then
+            count=$(jq -s '
+              [ .[] |
+                if type == "object" and has("runs") then
+                  .runs[].results[]? | select(.level == "error")
+                  | "\(.ruleId)|\(.locations[0].physicalLocation.artifactLocation.uri // "")|\(.locations[0].physicalLocation.region.startLine // 0)"
+                else
+                  .. | objects | select(has("vulnerabilities")) | .vulnerabilities[]?
+                  | select(.severity == "high" or .severity == "critical") | .id
+                end
+              ] | unique | length' "${existing[@]}")
+          fi
+          if [ "$count" -gt "$MAX_HIGH_FINDINGS" ]; then
+            echo "### ❌ $LABEL: $count high/critical findings (allowed: $MAX_HIGH_FINDINGS)" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::$LABEL found $count high/critical findings, more than the allowed $MAX_HIGH_FINDINGS."
+            exit 1
+          fi
+          echo "### ✅ $LABEL: $count high/critical findings (allowed: $MAX_HIGH_FINDINGS)" >> "$GITHUB_STEP_SUMMARY"
+          echo "$LABEL: $count high/critical findings, within the allowed $MAX_HIGH_FINDINGS."
+
+      - name: Upload results to GitHub Security tab
+        if: always() && hashFiles('snyk-code.sarif') != ''
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: snyk-code.sarif
+          category: snyk-sast
+
+  # ---------------- SCA: libraries and base images ----------------
+  sca:
+    name: SCA (Snyk)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: snyk/actions/setup@11b673cfb4b0dc0d860a1323caa199d54950dcce # master 2026-10-07
+
+      - name: Check Snyk token
+        run: |
+          if [ -z "$SNYK_TOKEN" ]; then
+            echo "::error::SNYK_TOKEN secret is not set (Settings > Secrets and variables > Actions)."
+            exit 1
+          fi
+
+      - name: Snyk Open Source test (project dependencies)
+        run: |
+          set +e
+          snyk test ${SNYK_CFG_ORG:+--org="$SNYK_CFG_ORG"} --all-projects \
+            --json-file-output=snyk-oss.json --sarif-file-output=snyk-oss.sarif
+          rc=$?
+          set -e
+          # 3 = no supported manifest (pom.xml, package.json, requirements.txt, ...): nothing to scan
+          if [ "$rc" -eq 3 ]; then
+            echo "No dependency manifests found; skipping Open Source results."
+            rm -f snyk-oss.json snyk-oss.sarif
+          elif [ "$rc" -gt 1 ]; then
+            echo "::error::Snyk Open Source could not run (exit $rc)."
+            exit 1
+          fi
+
+      - name: Build image
+        run: docker build -t "$IMAGE" -f "$DOCKERFILE" "$DOCKER_CONTEXT"
+
+      - name: Snyk Container test (base image and runtime)
+        run: |
+          set +e
+          snyk container test "$IMAGE" ${SNYK_CFG_ORG:+--org="$SNYK_CFG_ORG"} --file="$DOCKERFILE" \
+            --json-file-output=snyk-container.json --sarif-file-output=snyk-container.sarif
+          rc=$?
+          set -e
+          if [ "$rc" -gt 1 ]; then
+            echo "::error::Snyk Container could not run (exit $rc)."
+            exit 1
+          fi
+
+      - name: Gate - fail on more than ${{ env.MAX_HIGH_FINDINGS }} high findings
+        env:
+          LABEL: SCA (Snyk)
+          FILES: snyk-oss.json snyk-container.json
+        run: *gate
+
+      - name: Clean SARIF for GitHub (drop empty security-severity values)
+        if: always()
+        run: |
+          for f in snyk-oss.sarif snyk-container.sarif; do
+            [ -s "$f" ] || continue
+            jq 'walk(if type == "object" and has("security-severity")
+                        and ((.["security-severity"] | tonumber? // null) == null)
+                     then del(.["security-severity"]) else . end)' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+          done
+
+      - name: Upload Open Source results to GitHub Security tab
+        if: always() && hashFiles('snyk-oss.sarif') != ''
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: snyk-oss.sarif
+          category: snyk-sca-open-source
+
+      - name: Upload Container results to GitHub Security tab
+        if: always() && hashFiles('snyk-container.sarif') != ''
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: snyk-container.sarif
+          category: snyk-sca-container
+
+  # ---------------- DAST: the running app (OWASP ZAP) ----------------
+  dast:
+    name: DAST (OWASP ZAP)
+    runs-on: ubuntu-latest
+    needs: [sast, sca]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and start the app
+        if: env.RUN_DAST == 'true'
+        run: |
+          docker build -t "$IMAGE" -f "$DOCKERFILE" "$DOCKER_CONTEXT"
+          docker run -d --name app -p "$APP_PORT:$APP_PORT" "$IMAGE"
+          for i in $(seq 1 30); do
+            curl -fsS -o /dev/null "http://localhost:$APP_PORT$HEALTH_PATH" && exit 0
+            sleep 2
+          done
+          echo "::error::App did not respond on http://localhost:$APP_PORT$HEALTH_PATH"
+          docker logs app
+          exit 1
+
+      - name: ZAP baseline scan
+        if: env.RUN_DAST == 'true'
+        uses: zaproxy/action-baseline@de8ad967d3548d44ef623df22cf95c3b0baf8b25 # v0.15.0
+        with:
+          target: http://localhost:${{ env.APP_PORT }}${{ env.DAST_PATH }}
+          rules_file_name: ${{ hashFiles('.zap/rules.tsv') != '' && '.zap/rules.tsv' || '' }}
+          fail_action: true
+          allow_issue_writing: false
+          cmd_options: '-a'
+
+      - name: DAST skipped
+        if: env.RUN_DAST != 'true'
+        run: echo "### ⏭️ DAST skipped (RUN_DAST is not 'true')" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Stop app
+        if: always() && env.RUN_DAST == 'true'
+        run: docker rm -f app || true

@@ -1,0 +1,46 @@
+name: Dev Deploy
+
+# Dev has no restrictions: every push to `dev` builds, smoke-tests and deploys.
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  APP_PORT:       ${{ vars.APP_PORT || '8080' }}
+  HEALTH_PATH:    ${{ vars.HEALTH_PATH || '/' }}
+  DOCKER_CONTEXT: ${{ vars.DOCKER_CONTEXT || '.' }}
+  DOCKERFILE:     ${{ vars.DOCKERFILE || 'Dockerfile' }}
+  IMAGE:          app:${{ github.sha }}
+
+jobs:
+  deploy-dev:
+    name: Deploy to DEV
+    runs-on: ubuntu-latest
+    environment: development
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t "$IMAGE" -f "$DOCKERFILE" "$DOCKER_CONTEXT"
+
+      - name: Smoke test
+        run: |
+          docker run -d --name app -p "$APP_PORT:$APP_PORT" "$IMAGE"
+          for i in $(seq 1 30); do
+            curl -fsS -o /dev/null "http://localhost:$APP_PORT$HEALTH_PATH" && exit 0
+            sleep 2
+          done
+          echo "::error::App did not respond on http://localhost:$APP_PORT$HEALTH_PATH"
+          docker logs app
+          exit 1
+
+      - name: Deploy to DEV
+        run: |
+          echo "Deploying $IMAGE to DEV"
+          # TODO: replace with your real dev deploy, for example:
+          #   - push to a registry, then update your dev service
+          #   - kubectl set image ..., aws ecs update-service ..., az webapp ..., etc.
