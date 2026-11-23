@@ -164,10 +164,15 @@ jobs:
             --project-name="$GITHUB_REPOSITORY" --target-reference="$GITHUB_REF_NAME" > snyk-code-report.txt 2>&1
           rc=$?
           set -e
-          tail -n 15 snyk-code-report.txt
-          [ "$rc" -le 1 ] || { echo "::warning::Could not send Snyk Code results to the dashboard (exit $rc)."; exit 0; }
-          url=$(grep -oE 'https://app\.snyk\.io/[^ ]+' snyk-code-report.txt | head -1)
-          echo "### 📊 Snyk dashboard (SAST): ${url:-https://app.snyk.io}" >> "$GITHUB_STEP_SUMMARY"
+          # Dashboard links contain the Snyk org name, so they are not printed
+          # (logs of public repos are public). Output is shown only on errors.
+          if [ "$rc" -gt 1 ]; then
+            tail -n 15 snyk-code-report.txt
+            echo "::warning::Could not send Snyk Code results to the dashboard (exit $rc)."
+            exit 0
+          fi
+          echo "Snyk Code results sent to the Snyk dashboard (project: $GITHUB_REPOSITORY)."
+          echo "### 📊 SAST results sent to Snyk: https://app.snyk.io → Projects → $GITHUB_REPOSITORY" >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------- SCA: libraries and base images ----------------
   sca:
@@ -289,13 +294,15 @@ jobs:
             --project-name="$GITHUB_REPOSITORY-container" >> snyk-monitor.txt 2>&1
           ctr=$?
           set -e
-          cat snyk-monitor.txt | grep -vE '^\s*$' | tail -n 20
-          # snyk monitor: 0 = ok, 3 = no manifests (fine), anything else = problem
-          [ "$oss" -eq 0 ] || [ "$oss" -eq 3 ] || echo "::warning::snyk monitor (Open Source) exited $oss"
-          [ "$ctr" -eq 0 ] || echo "::warning::snyk container monitor exited $ctr"
-          grep -oE 'https://app\.snyk\.io/[^ ]+' snyk-monitor.txt | sort -u | while read -r url; do
-            echo "### 📊 Snyk dashboard (SCA): $url" >> "$GITHUB_STEP_SUMMARY"
-          done
+          # snyk monitor: 0 = ok, 3 = no manifests (fine), anything else = problem.
+          # Output (which contains the Snyk org name) is shown only on errors.
+          if { [ "$oss" -ne 0 ] && [ "$oss" -ne 3 ]; } || [ "$ctr" -ne 0 ]; then
+            grep -vE '^\s*$' snyk-monitor.txt | tail -n 20
+            echo "::warning::Could not send all SCA results to the dashboard (open source exit $oss, container exit $ctr)."
+            exit 0
+          fi
+          echo "SCA results sent to the Snyk dashboard (projects for $GITHUB_REPOSITORY)."
+          echo "### 📊 SCA results sent to Snyk: https://app.snyk.io → Projects → $GITHUB_REPOSITORY" >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------- DAST: the running app (OWASP ZAP) ----------------
   dast:
