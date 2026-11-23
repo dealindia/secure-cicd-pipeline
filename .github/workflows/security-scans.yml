@@ -19,7 +19,7 @@ name: Security Scans
 # then the defaults below.
 on:
   pull_request:
-    branches: [main]
+    branches: [main, master]
   workflow_dispatch:
   workflow_call:
     inputs:
@@ -55,6 +55,10 @@ on:
         description: Snyk organization ID (optional)
         type: string
         required: false
+      python-version:
+        description: Python version used to resolve requirements.txt for Snyk
+        type: string
+        required: false
     secrets:
       SNYK_TOKEN:
         required: true
@@ -81,7 +85,7 @@ jobs:
     name: SAST (Snyk Code)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: snyk/actions/setup@11b673cfb4b0dc0d860a1323caa199d54950dcce # master 2026-10-07
 
@@ -149,7 +153,7 @@ jobs:
     name: SCA (Snyk)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: snyk/actions/setup@11b673cfb4b0dc0d860a1323caa199d54950dcce # master 2026-10-07
 
@@ -159,6 +163,34 @@ jobs:
             echo "::error::SNYK_TOKEN secret is not set (Settings > Secrets and variables > Actions)."
             exit 1
           fi
+
+      # Snyk needs Python packages installed (and an npm lockfile) to resolve
+      # the full dependency tree. These steps only run when such files exist.
+      - name: Set up Python (requirements.txt found)
+        if: hashFiles('**/requirements.txt') != ''
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ inputs.python-version || vars.PYTHON_VERSION || '3.11' }}
+
+      - name: Install Python dependencies for Snyk
+        if: hashFiles('**/requirements.txt') != ''
+        run: |
+          git ls-files '*requirements*.txt' | while read -r f; do
+            echo "Installing $f"
+            pip install --disable-pip-version-check -r "$f"
+          done
+
+      - name: Create npm lockfiles where missing
+        if: hashFiles('**/package.json') != ''
+        run: |
+          git ls-files '*package.json' | grep -v node_modules | while read -r f; do
+            d=$(dirname "$f")
+            if [ ! -f "$d/package-lock.json" ] && [ ! -f "$d/yarn.lock" ] && [ ! -f "$d/pnpm-lock.yaml" ]; then
+              echo "Generating package-lock.json in $d"
+              (cd "$d" && npm install --package-lock-only --ignore-scripts --no-audit --no-fund) \
+                || echo "::warning::Could not generate a lockfile in $d"
+            fi
+          done
 
       - name: Snyk Open Source test (project dependencies)
         run: |
@@ -229,7 +261,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [sast, sca]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Build and start the app
         if: env.RUN_DAST == 'true'
