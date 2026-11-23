@@ -102,6 +102,7 @@ Set these as **repository variables** (Settings → Secrets and variables → Ac
 | `DOCKER_CONTEXT` | `.` | Docker build context |
 | `DOCKERFILE` | `Dockerfile` | Path to the Dockerfile |
 | `RUN_DAST` | `true` | Set to `false` to skip DAST (for example, for non-HTTP apps) |
+| `PYTHON_VERSION` | `3.11` | Python used to install `requirements.txt` so Snyk can resolve it |
 
 ## Use the scans from another repo (no copy needed)
 
@@ -125,7 +126,7 @@ jobs:
       SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
 ```
 
-Inputs: `max-high-findings`, `app-port`, `health-path`, `dast-path`, `docker-context`, `dockerfile`, `run-dast`, `snyk-org`. Each falls back to the repo variable of the same name, then to the default above.
+Inputs: `max-high-findings`, `app-port`, `health-path`, `dast-path`, `docker-context`, `dockerfile`, `run-dast`, `snyk-org`, `python-version`. Each falls back to the repo variable of the same name, then to the default above.
 
 The check names in the caller repo become `security / SAST (Snyk Code)` and so on. Use those names in your branch ruleset.
 
@@ -141,6 +142,8 @@ If ZAP flags something you've reviewed and accept, add a tab-separated line to `
 - **Public vs private repos:** required reviewers on environments and branch rulesets are free on **public** repos. On private repos they need GitHub Pro, Team or Enterprise.
 - **You can't approve your own PR.** If you're the only maintainer, use `--admin-bypass` or invite a second reviewer.
 - **Snyk free plan** has monthly test limits. Each PR plus its merge uses about two tests per scan type.
+- **`main` or `master`:** the workflows run for either name, so you don't have to rename your default branch.
+- **Python and Node:** before Snyk Open Source runs, the pipeline installs `requirements*.txt` packages and creates a `package-lock.json` where one is missing. Snyk needs these to see the full dependency tree.
 - **No dependency manifest?** If your project has no `pom.xml`, `package.json`, `requirements.txt` or similar, Snyk Open Source has nothing to scan and skips itself. Snyk Container still scans the image.
 - Third-party actions are pinned to commit SHAs where tags have been unreliable. Keep them updated (for example with Dependabot).
 

@@ -4,7 +4,7 @@ name: Prod Deploy
 # pass, the deploy waits for a reviewer to approve the `production` environment.
 on:
   push:
-    branches: [main]
+    branches: [main, master]
   workflow_dispatch:
 
 permissions:
@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: production        # pauses here for manual approval
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Build Docker image
         run: docker build -t "$IMAGE" -f "$DOCKERFILE" "$BUILD_CONTEXT"
