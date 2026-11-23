@@ -59,6 +59,10 @@ on:
         description: Python version used to resolve requirements.txt for Snyk
         type: string
         required: false
+      snyk-monitor:
+        description: "'true' or 'false': send default-branch results to the Snyk dashboard"
+        type: string
+        required: false
     secrets:
       SNYK_TOKEN:
         required: true
@@ -78,6 +82,9 @@ env:
   SNYK_CFG_ORG:      ${{ inputs.snyk-org || vars.SNYK_ORG }}
   SNYK_TOKEN:        ${{ secrets.SNYK_TOKEN }}
   IMAGE:             app:scan
+  # Send results to app.snyk.io for the default branch (every merge) and for
+  # manual runs. PRs only report to GitHub, so the dashboard reflects main.
+  SEND_TO_SNYK: ${{ (inputs.snyk-monitor || vars.SNYK_MONITOR || 'true') == 'true' && (github.ref_name == github.event.repository.default_branch || github.event_name == 'workflow_dispatch') }}
 
 jobs:
   # ---------------- SAST: your own source code ----------------
@@ -147,6 +154,25 @@ jobs:
         with:
           sarif_file: snyk-code.sarif
           category: snyk-sast
+
+      - name: Send results to Snyk dashboard
+        if: always() && env.SEND_TO_SNYK == 'true'
+        continue-on-error: true
+        run: |
+          set +e
+          snyk code test ${SNYK_CFG_ORG:+--org="$SNYK_CFG_ORG"} --report \
+            --project-name="$GITHUB_REPOSITORY" --target-reference="$GITHUB_REF_NAME" > snyk-code-report.txt 2>&1
+          rc=$?
+          set -e
+          # Dashboard links contain the Snyk org name, so they are not printed
+          # (logs of public repos are public). Output is shown only on errors.
+          if [ "$rc" -gt 1 ]; then
+            tail -n 15 snyk-code-report.txt
+            echo "::warning::Could not send Snyk Code results to the dashboard (exit $rc)."
+            exit 0
+          fi
+          echo "Snyk Code results sent to the Snyk dashboard (project: $GITHUB_REPOSITORY)."
+          echo "### 📊 SAST results sent to Snyk: https://app.snyk.io → Projects → $GITHUB_REPOSITORY" >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------- SCA: libraries and base images ----------------
   sca:
@@ -254,6 +280,29 @@ jobs:
         with:
           sarif_file: snyk-container.sarif
           category: snyk-sca-container
+
+      - name: Send results to Snyk dashboard
+        if: always() && env.SEND_TO_SNYK == 'true'
+        continue-on-error: true
+        run: |
+          set +e
+          snyk monitor ${SNYK_CFG_ORG:+--org="$SNYK_CFG_ORG"} --all-projects \
+            --target-reference="$GITHUB_REF_NAME" \
+            --remote-repo-url="https://github.com/$GITHUB_REPOSITORY" > snyk-monitor.txt 2>&1
+          oss=$?
+          snyk container monitor "$IMAGE" ${SNYK_CFG_ORG:+--org="$SNYK_CFG_ORG"} --file="$DOCKERFILE" \
+            --project-name="$GITHUB_REPOSITORY-container" >> snyk-monitor.txt 2>&1
+          ctr=$?
+          set -e
+          # snyk monitor: 0 = ok, 3 = no manifests (fine), anything else = problem.
+          # Output (which contains the Snyk org name) is shown only on errors.
+          if { [ "$oss" -ne 0 ] && [ "$oss" -ne 3 ]; } || [ "$ctr" -ne 0 ]; then
+            grep -vE '^\s*$' snyk-monitor.txt | tail -n 20
+            echo "::warning::Could not send all SCA results to the dashboard (open source exit $oss, container exit $ctr)."
+            exit 0
+          fi
+          echo "SCA results sent to the Snyk dashboard (projects for $GITHUB_REPOSITORY)."
+          echo "### 📊 SCA results sent to Snyk: https://app.snyk.io → Projects → $GITHUB_REPOSITORY" >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------- DAST: the running app (OWASP ZAP) ----------------
   dast:

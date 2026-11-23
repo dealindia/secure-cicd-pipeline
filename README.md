@@ -103,6 +103,7 @@ Set these as **repository variables** (Settings → Secrets and variables → Ac
 | `DOCKERFILE` | `Dockerfile` | Path to the Dockerfile |
 | `RUN_DAST` | `true` | Set to `false` to skip DAST (for example, for non-HTTP apps) |
 | `PYTHON_VERSION` | `3.11` | Python used to install `requirements.txt` so Snyk can resolve it |
+| `SNYK_MONITOR` | `true` | Send results from the default branch (and manual runs) to your Snyk dashboard. Set to `false` to report to GitHub only |
 
 ## Use the scans from another repo (no copy needed)
 
@@ -126,9 +127,17 @@ jobs:
       SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
 ```
 
-Inputs: `max-high-findings`, `app-port`, `health-path`, `dast-path`, `docker-context`, `dockerfile`, `run-dast`, `snyk-org`, `python-version`. Each falls back to the repo variable of the same name, then to the default above.
+Inputs: `max-high-findings`, `app-port`, `health-path`, `dast-path`, `docker-context`, `dockerfile`, `run-dast`, `snyk-org`, `python-version`, `snyk-monitor`. Each falls back to the repo variable of the same name, then to the default above.
 
 The check names in the caller repo become `security / SAST (Snyk Code)` and so on. Use those names in your branch ruleset.
+
+## Where to see the results
+
+| Where | What you get |
+|---|---|
+| **Security → Code scanning** in your repo | Every SAST and SCA finding, with the file, the CVE and the fix. For PR results, filter with `pr:<number>` or `branch:dev` |
+| **Actions → the run → Summary** | The gate result for each scan, links to the Snyk dashboard, and the **`zap_scan`** artifact (a full ZAP HTML report) |
+| **[app.snyk.io](https://app.snyk.io) → Projects** | Snyk's dashboard: history, trends, fix suggestions and alerts for new vulnerabilities. Updated on every merge to the default branch and on manual runs (**Actions → Security Scans → Run workflow**). PR results are not sent |
 
 ## Accepting a DAST finding
 
@@ -141,7 +150,7 @@ If ZAP flags something you've reviewed and accept, add a tab-separated line to `
 
 - **Public vs private repos:** required reviewers on environments and branch rulesets are free on **public** repos. On private repos they need GitHub Pro, Team or Enterprise.
 - **You can't approve your own PR.** If you're the only maintainer, use `--admin-bypass` or invite a second reviewer.
-- **Snyk free plan** has monthly test limits. Each PR plus its merge uses about two tests per scan type.
+- **Snyk free plan** has monthly test limits. Each PR plus its merge uses about two tests per scan type, and sending results to the dashboard uses one more Snyk Code test per merge.
 - **`main` or `master`:** the workflows run for either name, so you don't have to rename your default branch.
 - **Python and Node:** before Snyk Open Source runs, the pipeline installs `requirements*.txt` packages and creates a `package-lock.json` where one is missing. Snyk needs these to see the full dependency tree.
 - **No dependency manifest?** If your project has no `pom.xml`, `package.json`, `requirements.txt` or similar, Snyk Open Source has nothing to scan and skips itself. Snyk Container still scans the image.
