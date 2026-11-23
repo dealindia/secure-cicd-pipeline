@@ -59,6 +59,10 @@ on:
         description: Python version used to resolve requirements.txt for Snyk
         type: string
         required: false
+      snyk-monitor:
+        description: "'true' or 'false': send default-branch results to the Snyk dashboard"
+        type: string
+        required: false
     secrets:
       SNYK_TOKEN:
         required: true
@@ -78,6 +82,9 @@ env:
   SNYK_CFG_ORG:      ${{ inputs.snyk-org || vars.SNYK_ORG }}
   SNYK_TOKEN:        ${{ secrets.SNYK_TOKEN }}
   IMAGE:             app:scan
+  # Send results to app.snyk.io for the default branch (every merge) and for
+  # manual runs. PRs only report to GitHub, so the dashboard reflects main.
+  SEND_TO_SNYK: ${{ (inputs.snyk-monitor || vars.SNYK_MONITOR || 'true') == 'true' && (github.ref_name == github.event.repository.default_branch || github.event_name == 'workflow_dispatch') }}
 
 jobs:
   # ---------------- SAST: your own source code ----------------
@@ -147,6 +154,20 @@ jobs:
         with:
           sarif_file: snyk-code.sarif
           category: snyk-sast
+
+      - name: Send results to Snyk dashboard
+        if: always() && env.SEND_TO_SNYK == 'true'
+        continue-on-error: true
+        run: |
+          set +e
+          snyk code test ${SNYK_CFG_ORG:+--org="$SNYK_CFG_ORG"} --report \
+            --project-name="$GITHUB_REPOSITORY" --target-reference="$GITHUB_REF_NAME" > snyk-code-report.txt 2>&1
+          rc=$?
+          set -e
+          tail -n 15 snyk-code-report.txt
+          [ "$rc" -le 1 ] || { echo "::warning::Could not send Snyk Code results to the dashboard (exit $rc)."; exit 0; }
+          url=$(grep -oE 'https://app\.snyk\.io/[^ ]+' snyk-code-report.txt | head -1)
+          echo "### 📊 Snyk dashboard (SAST): ${url:-https://app.snyk.io}" >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------- SCA: libraries and base images ----------------
   sca:
@@ -254,6 +275,27 @@ jobs:
         with:
           sarif_file: snyk-container.sarif
           category: snyk-sca-container
+
+      - name: Send results to Snyk dashboard
+        if: always() && env.SEND_TO_SNYK == 'true'
+        continue-on-error: true
+        run: |
+          set +e
+          snyk monitor ${SNYK_CFG_ORG:+--org="$SNYK_CFG_ORG"} --all-projects \
+            --target-reference="$GITHUB_REF_NAME" \
+            --remote-repo-url="https://github.com/$GITHUB_REPOSITORY" > snyk-monitor.txt 2>&1
+          oss=$?
+          snyk container monitor "$IMAGE" ${SNYK_CFG_ORG:+--org="$SNYK_CFG_ORG"} --file="$DOCKERFILE" \
+            --project-name="$GITHUB_REPOSITORY-container" >> snyk-monitor.txt 2>&1
+          ctr=$?
+          set -e
+          cat snyk-monitor.txt | grep -vE '^\s*$' | tail -n 20
+          # snyk monitor: 0 = ok, 3 = no manifests (fine), anything else = problem
+          [ "$oss" -eq 0 ] || [ "$oss" -eq 3 ] || echo "::warning::snyk monitor (Open Source) exited $oss"
+          [ "$ctr" -eq 0 ] || echo "::warning::snyk container monitor exited $ctr"
+          grep -oE 'https://app\.snyk\.io/[^ ]+' snyk-monitor.txt | sort -u | while read -r url; do
+            echo "### 📊 Snyk dashboard (SCA): $url" >> "$GITHUB_STEP_SUMMARY"
+          done
 
   # ---------------- DAST: the running app (OWASP ZAP) ----------------
   dast:
