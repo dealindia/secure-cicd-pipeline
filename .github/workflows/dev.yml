@@ -12,7 +12,7 @@ permissions:
 env:
   APP_PORT:       ${{ vars.APP_PORT || '8080' }}
   HEALTH_PATH:    ${{ vars.HEALTH_PATH || '/' }}
-  DOCKER_CONTEXT: ${{ vars.DOCKER_CONTEXT || '.' }}
+  BUILD_CONTEXT:  ${{ vars.DOCKER_CONTEXT || '.' }}
   DOCKERFILE:     ${{ vars.DOCKERFILE || 'Dockerfile' }}
   IMAGE:          app:${{ github.sha }}
 
@@ -25,7 +25,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build Docker image
-        run: docker build -t "$IMAGE" -f "$DOCKERFILE" "$DOCKER_CONTEXT"
+        run: docker build -t "$IMAGE" -f "$DOCKERFILE" "$BUILD_CONTEXT"
 
       - name: Smoke test
         run: |
